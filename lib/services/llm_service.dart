@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'package:http/http.dart' as http;
 import 'package:flutter_llama/flutter_llama.dart';
 
 class LlmService {
@@ -11,7 +12,9 @@ class LlmService {
   final _responseController = StreamController<String>.broadcast();
   Stream<String> get responseStream => _responseController.stream;
 
-  // Ruta del modelo
+  // URL del API Gateway
+  static const String _baseUrl = "https://serverlest-topicos-gateway-8zoia048.uc.gateway.dev";
+  
   static const String modelPath = "/storage/emulated/0/Models/qwen2.5-3b-instruct-q4_0.gguf";
 
   Future<bool> initModel() async {
@@ -28,44 +31,37 @@ class LlmService {
 
       final config = LlamaConfig(
         modelPath: modelPath,
-        nThreads: 4, // Ajustado para móviles
-        nGpuLayers: 0, // Por defecto 0 para evitar fallos en dispositivos sin GPU compatible
+        nThreads: 4,
+        nGpuLayers: 0,
         contextSize: 2048,
         batchSize: 512,
-        useGpu: false, // Por defecto false para mayor compatibilidad inicial
+        useGpu: false,
         verbose: false,
       );
 
       final success = await _llama.loadModel(config);
-
-      if (success) {
-        // Delay de seguridad para que los canales de eventos se estabilicen
-        await Future.delayed(const Duration(milliseconds: 500));
-        _isLoaded = true;
-        return true;
-      } else {
-        print("❌ Error: No se pudo cargar el modelo con flutter_llama");
-        return false;
-      }
+      _isLoaded = success;
+      return success;
     } catch (e) {
-      print("❌ Error cargando Llama: $e");
+      print("❌ Error cargando modelo: $e");
       return false;
     }
   }
 
-  // System Prompt extraído de tus configuraciones
   String _buildSystemPrompt() {
     return (
         "Eres un asistente experto en APIs. Tu tarea es convertir instrucciones de usuario en lenguaje natural "
         "a una LISTA de objetos JSON para un sistema de gestión.\n\n"
-        "Reglas:\n"
-        "1. Identifica todas las acciones solicitadas por el usuario.\n"
-        "2. Para cada acción, identifica el módulo, operación, método y endpoint correctos.\n"
-        "3. Devuelve SIEMPRE una lista [{}, {}] incluso si solo hay una acción.\n"
-        "4. NO agregues explicaciones, solo devuelve el array JSON.\n\n"
+        "REGLAS DE ORO (SÍGUELAS SIEMPRE):\n"
+        "1. Para el módulo 'usuarios':\n"
+        "   - USA SIEMPRE 'email' (no 'correo').\n"
+        "   - USA SIEMPRE 'password' (no 'contrasena').\n"
+        "   - Los endpoints son en SINGULAR: '/usuario/crear', '/usuario/listar'.\n"
+        "2. Devuelve SIEMPRE una lista [{}, {}] incluso para una sola acción.\n"
+        "3. NO agregues explicaciones, solo el array JSON.\n\n"
         "Ejemplo:\n"
-        "Usuario: 'Crea el usuario Pepe y luego lista el inventario'\n"
-        "Respuesta: [{\"module\": \"usuarios\", \"operation\": \"crear\", \"method\": \"POST\", \"endpoint\": \"/usuario/crear\", \"data\": {\"nombre\": \"Pepe\"}}, {\"module\": \"inventario\", \"operation\": \"listar\", \"method\": \"GET\", \"endpoint\": \"/inventario/listar\", \"data\": {}}]"
+        "Usuario: 'Crea el usuario Pepe con clave 123 y luego lista el inventario'\n"
+        "Respuesta: [{\"module\": \"usuarios\", \"operation\": \"crear\", \"method\": \"POST\", \"endpoint\": \"/usuario/crear\", \"data\": {\"nombre\": \"Pepe\", \"email\": \"pepe@test.com\", \"password\": \"123\", \"rol\": \"user\"}}, {\"module\": \"inventario\", \"operation\": \"listar\", \"method\": \"GET\", \"endpoint\": \"/inventario/listar\", \"data\": {}}]"
     );
   }
 
@@ -78,7 +74,6 @@ class LlmService {
     try {
       await Future.delayed(const Duration(milliseconds: 100));
 
-      // Construimos el prompt complejo con el prefijo forzado "["
       final systemPrompt = _buildSystemPrompt();
       final fullPrompt = "<|im_start|>system\n$systemPrompt<|im_end|>\n<|im_start|>user\n$prompt<|im_end|>\n<|im_start|>assistant\n[";
       
@@ -86,26 +81,24 @@ class LlmService {
 
       final params = GenerationParams(
         prompt: fullPrompt,
-        temperature: 0.2, // Temperatura baja para mayor precisión en JSON
+        temperature: 0.1, // Muy baja para máxima fidelidad JSON
         topP: 0.9,
         maxTokens: 1024,
       );
 
-      String fullResponse = "["; // Empezamos con el prefijo que ya le dimos
+      String fullResponse = "[";
       
       await for (final token in _llama.generateStream(params)) {
         if (token.isNotEmpty) {
           fullResponse += token;
-          // Mostramos el progreso técnico en el chat si quieres, 
-          // pero por ahora lo guardamos para procesarlo al final.
           _responseController.add(token); 
         }
       }
 
-      print("🏁 Respuesta completa recibida: $fullResponse");
+      print("🏁 Respuesta completa recibida. Procesando tareas reales...");
       
-      // Simulación de procesamiento de tareas
-      await _simulateTaskExecution(fullResponse);
+      // Ejecución real de tareas contra el Backend
+      await _executeRealTasks(fullResponse);
 
     } catch (e) {
       print("❌ Error en generación: $e");
@@ -113,29 +106,70 @@ class LlmService {
     }
   }
 
-  // Función para simular el procesamiento de los JSONs
-  Future<void> _simulateTaskExecution(String jsonResponse) async {
+  Future<void> _executeRealTasks(String jsonResponse) async {
     try {
-      // Intentamos limpiar la respuesta por si la IA agregó algo fuera de los corchetes
       final startIndex = jsonResponse.indexOf('[');
       final endIndex = jsonResponse.lastIndexOf(']') + 1;
       final cleanJson = jsonResponse.substring(startIndex, endIndex);
       
-      // Parseamos y formateamos el JSON para que se vea "bonito"
-      final dynamic parsedJson = json.decode(cleanJson);
-      final encoder = const JsonEncoder.withIndent('  ');
-      final prettyJson = encoder.convert(parsedJson);
-
-      _responseController.add("\n\n📦 **Estructura de Tareas Identificada:**\n```json\n$prettyJson\n```\n");
+      final List<dynamic> tasks = json.decode(cleanJson);
       
-      _responseController.add("\n⚙️ **Procesando tareas detectadas...**\n");
-      await Future.delayed(const Duration(seconds: 1));
+      _responseController.add("\n\n⚙️ **Ejecutando tareas en el servidor...**\n");
 
-      _responseController.add("✅ Simulación: Acciones registradas con éxito.\n");
-      _responseController.add("📡 *Backend: Serverlest_Topicos listo para integración.*");
+      for (var task in tasks) {
+        final String module = task['module'] ?? 'desconocido';
+        final String operation = task['operation'] ?? 'acción';
+        final String method = task['method'] ?? 'GET';
+        final String endpoint = task['endpoint'] ?? '';
+        final Map<String, dynamic> data = Map<String, dynamic>.from(task['data'] ?? {});
+
+        _responseController.add("\n⏳ Procesando $operation en $module...");
+
+        try {
+          final response = await _performHttpRequest(method, endpoint, data);
+          
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            final dynamic decodedResponse = json.decode(response.body);
+            final prettyData = const JsonEncoder.withIndent('  ').convert(decodedResponse);
+            
+            _responseController.add("\n✅ **Éxito:** $operation completado.");
+            _responseController.add("\n```json\n$prettyData\n```\n");
+          } else {
+            _responseController.add("\n❌ **Error (${response.statusCode}):** No se pudo completar $operation.");
+            _responseController.add("\n`Detalle: ${response.body}`\n");
+          }
+        } catch (e) {
+          _responseController.add("\n❌ **Fallo de conexión:** $e");
+        }
+      }
+
+      _responseController.add("\n🏁 **Todas las tareas procesadas.**");
       
     } catch (e) {
-      print("⚠️ No se pudo formatear el JSON: $e");
+      print("⚠️ Error procesando la lista de tareas: $e");
+      _responseController.add("\n⚠️ Hubo un error al interpretar las tareas de la IA.");
+    }
+  }
+
+  Future<http.Response> _performHttpRequest(String method, String endpoint, Map<String, dynamic> data) async {
+    final url = Uri.parse("$_baseUrl$endpoint");
+    final headers = {'Content-Type': 'application/json'};
+    final body = json.encode(data);
+
+    switch (method.toUpperCase()) {
+      case 'POST':
+        return await http.post(url, headers: headers, body: body);
+      case 'PUT':
+        return await http.put(url, headers: headers, body: body);
+      case 'DELETE':
+        return await http.delete(url, headers: headers, body: body);
+      case 'GET':
+      default:
+        var getUrl = url;
+        if (data.isNotEmpty && method.toUpperCase() == 'GET') {
+          getUrl = url.replace(queryParameters: data.map((k, v) => MapEntry(k, v.toString())));
+        }
+        return await http.get(getUrl, headers: headers);
     }
   }
 
