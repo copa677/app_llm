@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../services/llm_service.dart';
 
-// Modelo para manejar los mensajes
 class ChatMessage {
-  final String text;
+  String text;
   final bool isUser;
 
   ChatMessage({required this.text, required this.isUser});
@@ -17,35 +18,113 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
-  final List<ChatMessage> _messages = [
-    ChatMessage(text: "Hola, soy Gemma. ¿En qué puedo ayudarte hoy?", isUser: false),
-  ];
+  final LlmService _llmService = LlmService();
+  final List<ChatMessage> _messages = [];
+  
+  bool _isInitializing = true;
+  bool _isGenerating = false;
 
-  void _handleSend() {
-    if (_controller.text.trim().isEmpty) return;
-    
-    setState(() {
-      // Añadimos el mensaje del usuario
-      _messages.add(ChatMessage(text: _controller.text, isUser: true));
-      
-      // Simulamos respuesta de la IA (esto lo conectaremos después al modelo real)
-      _messages.add(ChatMessage(text: "Recibido. Estoy procesando tu consulta...", isUser: false));
-      
-      _controller.clear();
+  @override
+  void initState() {
+    super.initState();
+    _setupModel();
+    _listenToResponses();
+  }
+
+  void _listenToResponses() {
+    _llmService.responseStream.listen((token) {
+      if (token.isEmpty) return;
+
+      setState(() {
+        int lastIndex = _messages.length - 1;
+        if (lastIndex >= 0 && !_messages[lastIndex].isUser) {
+          _messages[lastIndex].text += token;
+        }
+        
+        // Si el token indica el fin o simplemente queremos dejar de generar
+        // Nota: Algunas librerías envían un token vacío o específico al terminar
+        if (token.contains("<end_of_turn>") || token.contains("</span>")) {
+           _isGenerating = false;
+        }
+      });
     });
+  }
+
+  Future<void> _setupModel() async {
+    // 1. Pedir permisos de almacenamiento
+    var status = await Permission.manageExternalStorage.request();
+    
+    if (status.isGranted) {
+      // 2. Inicializar el modelo
+      bool success = await _llmService.initModel();
+      if (success) {
+        setState(() {
+          _messages.add(ChatMessage(text: "¡Gemma está lista! ¿Qué quieres consultar?", isUser: false));
+          _isInitializing = false;
+        });
+      } else {
+        _showError("No se pudo cargar el modelo. Verifica que el archivo esté en la ruta correcta.");
+      }
+    } else {
+      _showError("Se necesitan permisos de almacenamiento para cargar el modelo.");
+    }
+  }
+
+  void _showError(String error) {
+    setState(() {
+      _messages.add(ChatMessage(text: "Error: $error", isUser: false));
+      _isInitializing = false;
+    });
+  }
+
+  Future<void> _handleSend() async {
+    if (_controller.text.trim().isEmpty || _isGenerating) return;
+    
+    String userPrompt = _controller.text;
+    _controller.clear();
+
+    setState(() {
+      _messages.add(ChatMessage(text: userPrompt, isUser: true));
+      // Añadimos la burbuja vacía para la respuesta de la IA
+      _messages.add(ChatMessage(text: "", isUser: false));
+      _isGenerating = true;
+    });
+
+    try {
+      await _llmService.generateResponse(userPrompt);
+    } catch (e) {
+      setState(() {
+        _messages.last.text = "Error: $e";
+      });
+    } finally {
+      setState(() {
+        _isGenerating = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _llmService.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Gemma AI Chat"),
+        title: const Text("Gemma AI Local"),
         centerTitle: true,
-        elevation: 2,
+        actions: [
+          if (_isInitializing)
+            const Padding(
+              padding: EdgeInsets.only(right: 16),
+              child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+        ],
       ),
       body: Column(
         children: [
-          // Lista de mensajes con Scroll
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.all(16),
@@ -56,8 +135,8 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
-
-          // Input de texto
+          if (_isGenerating)
+            const LinearProgressIndicator(minHeight: 2),
           _buildInputArea(),
         ],
       ),
@@ -71,7 +150,7 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 6),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
         decoration: BoxDecoration(
           color: isUser 
               ? Theme.of(context).colorScheme.primary 
@@ -83,8 +162,8 @@ class _ChatScreenState extends State<ChatScreen> {
             bottomRight: Radius.circular(isUser ? 0 : 16),
           ),
         ),
-        child: Text(
-          message.text,
+        child: SelectableText(
+          message.text.isEmpty && !isUser ? "..." : message.text,
           style: TextStyle(
             color: isUser 
                 ? Theme.of(context).colorScheme.onPrimary 
@@ -101,21 +180,16 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, -5),
-          )
-        ],
+        border: Border(top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant)),
       ),
       child: Row(
         children: [
           Expanded(
             child: TextField(
               controller: _controller,
+              enabled: !_isInitializing && !_isGenerating,
               decoration: InputDecoration(
-                hintText: "Escribe un mensaje...",
+                hintText: _isInitializing ? "Cargando cerebro..." : "Escribe un mensaje...",
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(25),
                   borderSide: BorderSide.none,
@@ -128,8 +202,10 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           const SizedBox(width: 8),
           IconButton.filled(
-            onPressed: _handleSend,
-            icon: const Icon(Icons.send_rounded),
+            onPressed: (_isInitializing || _isGenerating) ? null : _handleSend,
+            icon: _isGenerating 
+              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+              : const Icon(Icons.send_rounded),
           ),
         ],
       ),

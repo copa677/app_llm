@@ -37,6 +37,22 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    packaging {
+        jniLibs {
+            // Esto ayuda en dispositivos Xiaomi/HyperOS
+            useLegacyPackaging = true
+        }
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            version = "3.22.1" // Forzamos una versión estándar que suele venir con el SDK
+        }
+    }
 }
 
 flutter {
