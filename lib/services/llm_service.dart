@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 import 'package:flutter_llama/flutter_llama.dart';
 
@@ -33,8 +34,8 @@ class LlmService {
         modelPath: modelPath,
         nThreads: 4,
         nGpuLayers: 0,
-        contextSize: 2048,
-        batchSize: 512,
+        contextSize: 3072,
+        batchSize: 2048,
         useGpu: false,
         verbose: false,
       );
@@ -48,109 +49,278 @@ class LlmService {
     }
   }
 
-  String _buildSystemPrompt() {
+  String? _extractActionJson(String response) {
+    try {
+      final actionIndex = response.indexOf('Acción:');
+      if (actionIndex == -1) return null;
+      
+      final jsonStart = response.indexOf('{', actionIndex);
+      if (jsonStart == -1) return null;
+      
+      int bracketCount = 0;
+      int jsonEnd = -1;
+      for (int i = jsonStart; i < response.length; i++) {
+        if (response[i] == '{') bracketCount++;
+        if (response[i] == '}') {
+          bracketCount--;
+          if (bracketCount == 0) {
+            jsonEnd = i;
+            break;
+          }
+        }
+      }
+      
+      if (jsonEnd != -1) {
+        return response.substring(jsonStart, jsonEnd + 1);
+      }
+    } catch (e) {
+      print("❌ Error extrayendo JSON de acción: $e");
+    }
+    return null;
+  }
+
+  Future<List<Map<String, String>>> _parseOpenApi() async {
+    try {
+      final String yamlText = await rootBundle.loadString('lib/assets/openapi.yaml');
+      final List<Map<String, String>> endpoints = [];
+      final lines = yamlText.split('\n');
+      
+      String? currentPath;
+      String? currentMethod;
+      String? currentSummary;
+      List<String> currentBlock = [];
+      
+      for (var line in lines) {
+        final trimmed = line.trim();
+        if (line.startsWith('  /') && line.endsWith(':')) {
+          if (currentPath != null && currentMethod != null && currentBlock.isNotEmpty) {
+            endpoints.add({
+              'path': currentPath,
+              'method': currentMethod,
+              'summary': currentSummary ?? '',
+              'yaml': currentBlock.join('\n'),
+            });
+          }
+          currentPath = line.substring(2, line.length - 1).trim();
+          currentMethod = null;
+          currentSummary = null;
+          currentBlock = [line];
+        } else if (currentPath != null) {
+          currentBlock.add(line);
+          if (line.startsWith('    get:') || line.startsWith('    post:') || line.startsWith('    put:') || line.startsWith('    delete:')) {
+            currentMethod = trimmed.substring(0, trimmed.length - 1).toUpperCase();
+          } else if (trimmed.startsWith('summary:')) {
+            currentSummary = trimmed.substring(8).trim();
+          }
+        }
+      }
+      
+      if (currentPath != null && currentMethod != null && currentBlock.isNotEmpty) {
+        endpoints.add({
+          'path': currentPath,
+          'method': currentMethod,
+          'summary': currentSummary ?? '',
+          'yaml': currentBlock.join('\n'),
+        });
+      }
+      
+      return endpoints;
+    } catch (e) {
+      print("❌ Error parseando openapi.yaml: $e");
+      return [];
+    }
+  }
+
+  Future<String> _getFilteredEndpointsAsYaml(String query) async {
+    final endpoints = await _parseOpenApi();
+    final lowerQuery = query.toLowerCase();
+    
+    bool matchUsuarios = lowerQuery.contains('usu') || lowerQuery.contains('user');
+    bool matchInventario = lowerQuery.contains('prod') || lowerQuery.contains('stock') || lowerQuery.contains('inven') || lowerQuery.contains('articulo');
+    bool matchVentas = lowerQuery.contains('vent') || lowerQuery.contains('clien');
+    bool matchCompras = lowerQuery.contains('compr') || lowerQuery.contains('prove') || lowerQuery.contains('insum');
+    
+    // Si no coincide con ninguna palabra clave de operaciones, no inyectamos endpoints (evita saturar el contexto)
+    bool matchAll = false;
+    
+    final List<String> filteredYamlBlocks = [];
+    
+    for (var endpoint in endpoints) {
+      final path = endpoint['path'] ?? '';
+      bool isMatched = false;
+      
+      if (matchAll) {
+        isMatched = true;
+      } else {
+        if (matchUsuarios && path.contains('/usuario')) isMatched = true;
+        if (matchInventario && path.contains('/inventario')) isMatched = true;
+        if (matchVentas && path.contains('/venta')) isMatched = true;
+        if (matchCompras && (path.contains('/compra') || path.contains('/detalle_compra'))) isMatched = true;
+      }
+      
+      if (isMatched) {
+        filteredYamlBlocks.add(endpoint['yaml'] ?? '');
+      }
+    }
+    
+    return filteredYamlBlocks.join('\n\n');
+  }
+
+  String _buildReActSystemPrompt(String filteredEndpointsYaml) {
     return (
-        "Eres un asistente experto en APIs. Tu tarea es convertir instrucciones de usuario en lenguaje natural "
-        "a una LISTA de objetos JSON para un sistema de gestión.\n\n"
-        "CATÁLOGO DE MÓDULOS Y ENDPOINTS (USA SOLO ESTOS):\n"
-        "- Módulo 'usuarios': Endpoints [/usuario/listar, /usuario/crear, /usuario/actualizar, /usuario/obtener/{id}]\n"
-        "- Módulo 'inventario' (Para productos/stock): Endpoints [/inventario/listar, /inventario/crear, /inventario/aumentar_stock, /inventario/disminuir_stock, /inventario/obtener/{id}]\n"
-        "- Módulo 'ventas': Endpoints [/venta/crear, /venta/crear_detalle_venta, /venta/anular_detalle_venta]\n"
-        "- Módulo 'compras': Endpoints [/compra/crear, /detalle_compra/crear, /compra/listar/{id}]\n\n"
-        "REGLAS DE ORO:\n"
-        "1. Si el usuario pide 'productos', USA EL MÓDULO 'inventario'.\n"
-        "2. Campos de usuario: USA 'email' y 'password'.\n"
-        "3. Devuelve SIEMPRE una lista [{}, {}].\n"
-        "4. NO agregues texto extra.\n\n"
-        "Ejemplo:\n"
-        "Usuario: 'Lista los productos'\n"
-        "Respuesta: [{\"module\": \"inventario\", \"operation\": \"listar\", \"method\": \"GET\", \"endpoint\": \"/inventario/listar\", \"data\": {}}]"
+      "Eres un agente inteligente experto en APIs y bases de datos.\n"
+      "Tu tarea es ayudar al usuario resolviendo sus peticiones usando exclusivamente los endpoints de la API descritos abajo.\n\n"
+      "ENDPOINTS DISPONIBLES (YAML):\n"
+      "$filteredEndpointsYaml\n\n"
+      "Sigue estrictamente el patrón ReAct (Reasoning and Acting). Por cada turno, tu respuesta debe consistir de una de las dos opciones de formato:\n\n"
+      "OPCIÓN 1 (Si necesitas ejecutar una llamada a la API):\n"
+      "Pensamiento: [Tu razonamiento del paso actual y por qué necesitas ejecutar la acción]\n"
+      "Acción: {\"method\": \"MÉTODO_HTTP\", \"endpoint\": \"/ruta\", \"data\": { ... datos en JSON ... }}\n\n"
+      "OPCIÓN 2 (Si ya terminaste o no requieres más acciones):\n"
+      "Pensamiento: [Tu razonamiento final]\n"
+      "Respuesta Final: [Tu respuesta descriptiva y explicada al usuario con los resultados obtenidos]\n\n"
+      "REGLAS CRÍTICAS:\n"
+      "1. Genera una sola 'Acción' por paso. Al generarla, detente inmediatamente escribiendo la palabra 'Observación:'. El sistema la ejecutará y te dará una 'Observación:'. No inventes la 'Observación:'.\n"
+      "2. Respeta estrictamente los nombres de parámetros de la especificación YAML entregada (por ejemplo, en /inventario/disminuir_stock se usa 'producto_id', pero en /inventario/aumentar_stock se usa 'id').\n"
+      "3. Si un endpoint requiere un parámetro en el path (como {id}), reemplaza '{id}' en el endpoint de la Acción con el número real (por ejemplo: /usuario/obtener/3).\n"
+      "4. Sé preciso y cauteloso. Si un ID es desconocido, puedes listar primero para buscarlo antes de proceder."
     );
   }
 
   Future<void> generateResponse(String prompt) async {
     if (!_isLoaded) {
-      _responseController.add("Error: Modelo no cargado.");
-      return;
+      print("🔄 Recargando el modelo con un contexto limpio...");
+      final success = await initModel();
+      if (!success) {
+        _responseController.add("Error: No se pudo recargar el modelo.");
+        return;
+      }
     }
 
     try {
       await Future.delayed(const Duration(milliseconds: 100));
 
-      final systemPrompt = _buildSystemPrompt();
-      final fullPrompt = "<|im_start|>system\n$systemPrompt<|im_end|>\n<|im_start|>user\n$prompt<|im_end|>\n<|im_start|>assistant\n[";
-      
-      print("🧠 IA procesando comando: $prompt");
+      print("🔍 RAG: Cargando y filtrando endpoints...");
+      final filteredEndpointsText = await _getFilteredEndpointsAsYaml(prompt);
 
-      final params = GenerationParams(
-        prompt: fullPrompt,
-        temperature: 0.1, // Muy baja para máxima fidelidad JSON
-        topP: 0.9,
-        maxTokens: 1024,
-      );
-
-      String fullResponse = "[";
+      final systemPrompt = _buildReActSystemPrompt(filteredEndpointsText);
       
-      await for (final token in _llama.generateStream(params)) {
-        if (token.isNotEmpty) {
-          fullResponse += token;
-          _responseController.add(token); 
+      // Construimos el historial conversacional inicial para el bucle ReAct
+      String conversationHistory = "<|im_start|>system\n$systemPrompt<|im_end|>\n<|im_start|>user\n$prompt<|im_end|>\n<|im_start|>assistant\n";
+      
+      bool finished = false;
+      int maxSteps = 5;
+      int step = 0;
+
+      _responseController.add("\n⚙️ **Iniciando agente de razonamiento (ReAct)...**\n");
+
+      while (!finished && step < maxSteps) {
+        step++;
+        print("🧠 ReAct Paso $step...");
+        _responseController.add("\n\n💬 **Paso $step de razonamiento...**\n");
+
+        final params = GenerationParams(
+          prompt: conversationHistory,
+          temperature: 0.1, // Muy baja para evitar alucinaciones
+          topP: 0.9,
+          maxTokens: 512,
+          stopSequences: const ["Observación:", "<|im_start|>", "<|im_end|>"],
+        );
+
+        String stepResponse = "";
+        bool stopDisplaying = false;
+        
+        await for (final token in _llama.generateStream(params)) {
+          if (token.isNotEmpty) {
+            stepResponse += token;
+            
+            // Permitir que el stream fluya normalmente hasta completarse en C++,
+            // pero detenemos el renderizado visual en la UI en cuanto se detecta la parada.
+            if (!stopDisplaying) {
+              _responseController.add(token);
+              
+              if (stepResponse.contains("Observación:") || 
+                  stepResponse.contains("<|im_start|>") || 
+                  stepResponse.contains("<|im_end|>")) {
+                stopDisplaying = true;
+              }
+            }
+          }
+        }
+
+        // Limpieza de cualquier stop sequence que se haya colado al final del texto acumulado
+        int cutoffIndex = stepResponse.length;
+        if (stepResponse.contains("Observación:")) {
+          final idx = stepResponse.indexOf("Observación:");
+          if (idx < cutoffIndex) cutoffIndex = idx;
+        }
+        if (stepResponse.contains("<|im_start|>")) {
+          final idx = stepResponse.indexOf("<|im_start|>");
+          if (idx < cutoffIndex) cutoffIndex = idx;
+        }
+        if (stepResponse.contains("<|im_end|>")) {
+          final idx = stepResponse.indexOf("<|im_end|>");
+          if (idx < cutoffIndex) cutoffIndex = idx;
+        }
+        
+        final cleanStepResponse = stepResponse.substring(0, cutoffIndex);
+
+        // Agregamos la respuesta generada limpia al historial
+        conversationHistory += cleanStepResponse;
+
+        if (cleanStepResponse.contains("Respuesta Final:")) {
+          finished = true;
+          print("🏁 ReAct completado con éxito.");
+          break;
+        } else if (stepResponse.contains("Acción:")) {
+          final actionJsonStr = _extractActionJson(stepResponse);
+          if (actionJsonStr != null) {
+            _responseController.add("\n\n🔌 **Conectando a la API...**\n");
+            
+            final observation = await _executeAction(actionJsonStr);
+            
+            _responseController.add("\n📥 **Respuesta del Servidor:**\n```json\n$observation\n```\n");
+            
+            // Añadimos la observación para la siguiente ronda de pensamiento
+            conversationHistory += "\nObservación: $observation\n<|im_start|>assistant\n";
+          } else {
+            _responseController.add("\n⚠️ Error: La Acción generada no tiene un JSON estructurado válido.\n");
+            finished = true;
+          }
+        } else {
+          // Si no generó ni Acción ni Respuesta Final, asumimos fin por seguridad
+          finished = true;
         }
       }
 
-      print("🏁 Respuesta completa recibida. Procesando tareas reales...");
-      
-      // Ejecución real de tareas contra el Backend
-      await _executeRealTasks(fullResponse);
+      if (step >= maxSteps) {
+        _responseController.add("\n⚠️ Se alcanzó el número máximo de pasos de razonamiento.");
+      }
 
     } catch (e) {
-      print("❌ Error en generación: $e");
-      _responseController.add("\nError: $e");
+      print("❌ Error en generación ReAct: $e");
+      _responseController.add("\nError en bucle de razonamiento: $e");
+    } finally {
+      print("🧹 Liberando contexto del modelo para prevenir colisiones de KV Cache...");
+      await _llama.unloadModel();
+      _isLoaded = false;
     }
   }
 
-  Future<void> _executeRealTasks(String jsonResponse) async {
+  Future<String> _executeAction(String jsonStr) async {
     try {
-      final startIndex = jsonResponse.indexOf('[');
-      final endIndex = jsonResponse.lastIndexOf(']') + 1;
-      final cleanJson = jsonResponse.substring(startIndex, endIndex);
+      final Map<String, dynamic> action = json.decode(jsonStr);
+      final String method = action['method'] ?? 'GET';
+      final String endpoint = action['endpoint'] ?? '';
+      final Map<String, dynamic> data = Map<String, dynamic>.from(action['data'] ?? {});
+
+      final response = await _performHttpRequest(method, endpoint, data);
       
-      final List<dynamic> tasks = json.decode(cleanJson);
-      
-      _responseController.add("\n\n⚙️ **Ejecutando tareas en el servidor...**\n");
-
-      for (var task in tasks) {
-        final String module = task['module'] ?? 'desconocido';
-        final String operation = task['operation'] ?? 'acción';
-        final String method = task['method'] ?? 'GET';
-        final String endpoint = task['endpoint'] ?? '';
-        final Map<String, dynamic> data = Map<String, dynamic>.from(task['data'] ?? {});
-
-        _responseController.add("\n⏳ Procesando $operation en $module...");
-
-        try {
-          final response = await _performHttpRequest(method, endpoint, data);
-          
-          if (response.statusCode >= 200 && response.statusCode < 300) {
-            final dynamic decodedResponse = json.decode(response.body);
-            final prettyData = const JsonEncoder.withIndent('  ').convert(decodedResponse);
-            
-            _responseController.add("\n✅ **Éxito:** $operation completado.");
-            _responseController.add("\n```json\n$prettyData\n```\n");
-          } else {
-            _responseController.add("\n❌ **Error (${response.statusCode}):** No se pudo completar $operation.");
-            _responseController.add("\n`Detalle: ${response.body}`\n");
-          }
-        } catch (e) {
-          _responseController.add("\n❌ **Fallo de conexión:** $e");
-        }
-      }
-
-      _responseController.add("\n🏁 **Todas las tareas procesadas.**");
-      
+      final dynamic decodedResponse = json.decode(response.body);
+      final prettyData = const JsonEncoder.withIndent('  ').convert(decodedResponse);
+      return prettyData;
     } catch (e) {
-      print("⚠️ Error procesando la lista de tareas: $e");
-      _responseController.add("\n⚠️ Hubo un error al interpretar las tareas de la IA.");
+      return "Fallo en ejecución: $e";
     }
   }
 

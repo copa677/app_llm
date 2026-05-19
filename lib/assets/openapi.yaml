@@ -1,0 +1,429 @@
+openapi: 3.0.3
+info:
+  title: API Gateway - Sistema de Gestión (Topicos)
+  description: >
+    Especificación OpenAPI de los endpoints expuestos en el API Gateway.
+    Esta especificación ha sido corregida y alineada estrictamente con la
+    implementación real del código Python en el backend.
+  version: 1.0.0
+servers:
+  - url: https://serverlest-topicos-gateway-8zoia048.uc.gateway.dev
+    description: Servidor de producción (API Gateway)
+
+paths:
+  # ==========================================
+  # MÓDULO: USUARIOS
+  # ==========================================
+  /usuario/listar:
+    get:
+      summary: Listar todos los usuarios
+      tags:
+        - Usuarios
+      responses:
+        '200':
+          description: Lista de usuarios obtenida con éxito
+
+  /usuario/crear:
+    post:
+      summary: Crear un nuevo usuario
+      tags:
+        - Usuarios
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nombre
+                - email
+                - password
+              properties:
+                nombre:
+                  type: string
+                  description: Nombre completo del usuario
+                email:
+                  type: string
+                  format: email
+                  description: Correo electrónico único
+                password:
+                  type: string
+                  description: Contraseña en texto plano (será hasheada en el backend)
+                rol:
+                  type: string
+                  default: user
+                  description: Rol asignado al usuario
+      responses:
+        '201':
+          description: Usuario creado exitosamente
+
+  /usuario/actualizar:
+    put:
+      summary: Actualizar datos de un usuario
+      tags:
+        - Usuarios
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+              properties:
+                id:
+                  type: integer
+                  description: ID único del usuario a actualizar
+                nombre:
+                  type: string
+                  description: Nuevo nombre completo
+                email:
+                  type: string
+                  format: email
+                  description: Nuevo correo electrónico
+                password:
+                  type: string
+                  description: Nueva contraseña
+                rol:
+                  type: string
+                  description: Nuevo rol
+      responses:
+        '200':
+          description: Usuario actualizado exitosamente
+
+  /usuario/obtener/{id}:
+    get:
+      summary: Obtener un usuario por su ID
+      tags:
+        - Usuarios
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID del usuario a obtener
+      responses:
+        '200':
+          description: Datos del usuario devueltos
+
+  # ==========================================
+  # MÓDULO: INVENTARIO (PRODUCTOS)
+  # ==========================================
+  /inventario/listar:
+    get:
+      summary: Listar productos del inventario
+      tags:
+        - Inventario
+      responses:
+        '200':
+          description: Lista de productos
+
+  /inventario/crear:
+    post:
+      summary: Crear nuevo producto
+      tags:
+        - Inventario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nombre
+                - descripcion
+              properties:
+                nombre:
+                  type: string
+                  description: Nombre del producto
+                descripcion:
+                  type: string
+                  description: Descripción única del producto
+                stock_actual:
+                  type: integer
+                  default: 0
+                  description: Stock inicial del producto
+      responses:
+        '201':
+          description: Producto creado exitosamente
+
+  /inventario/obtener/{id}:
+    get:
+      summary: Obtener producto por ID
+      tags:
+        - Inventario
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID del producto
+      responses:
+        '200':
+          description: Datos del producto obtenidos
+
+  /inventario/aumentar_stock:
+    put:
+      summary: Aumentar stock de un producto
+      tags:
+        - Inventario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+                - cantidad
+              properties:
+                id:
+                  type: integer
+                  description: ID del producto a aumentar stock
+                cantidad:
+                  type: integer
+                  description: Cantidad de unidades a añadir
+      responses:
+        '200':
+          description: Stock incrementado con éxito
+
+  /inventario/disminuir_stock:
+    put:
+      summary: Disminuir stock de un producto
+      tags:
+        - Inventario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - producto_id
+                - cantidad
+              properties:
+                producto_id:
+                  type: integer
+                  description: ID del producto a disminuir stock (Nota - En el backend este campo se llama producto_id)
+                cantidad:
+                  type: integer
+                  description: Cantidad de unidades a restar
+      responses:
+        '200':
+          description: Stock disminuido con éxito
+
+  # ==========================================
+  # MÓDULO: VENTAS
+  # ==========================================
+  /venta/crear:
+    post:
+      summary: Registrar cabecera y detalle de una venta
+      tags:
+        - Ventas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - usuario_id
+                - det_venta
+              properties:
+                usuario_id:
+                  type: integer
+                  description: ID del cliente/usuario que realiza la compra
+                det_venta:
+                  type: array
+                  description: Listado de productos comprados
+                  items:
+                    type: object
+                    required:
+                      - producto_id
+                      - cantidad
+                    properties:
+                      producto_id:
+                        type: integer
+                        description: ID del producto
+                      cantidad:
+                        type: integer
+                        description: Cantidad comprada (debe ser mayor a 0)
+                estado:
+                  type: string
+                  default: pendiente
+                  description: Estado inicial de la venta
+      responses:
+        '201':
+          description: Venta creada y procesada exitosamente
+
+  /venta/crear_detalle_venta:
+    post:
+      summary: Registrar una línea de detalle de venta individual
+      tags:
+        - Ventas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - venta_id
+                - producto_id
+                - cantidad
+                - precio_unitario
+              properties:
+                venta_id:
+                  type: integer
+                  description: ID de la cabecera de venta
+                producto_id:
+                  type: integer
+                  description: ID del producto
+                cantidad:
+                  type: integer
+                  description: Cantidad vendida
+                precio_unitario:
+                  type: number
+                  format: float
+                  description: Precio por unidad vendida
+      responses:
+        '201':
+          description: Detalle de venta registrado exitosamente
+
+  /venta/anular_detalle_venta:
+    put:
+      summary: Anular una línea de detalle de venta por su ID
+      tags:
+        - Ventas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+              properties:
+                id:
+                  type: integer
+                  description: ID único del detalle de venta a anular (Nota - En el backend este campo se llama id)
+      responses:
+        '200':
+          description: Detalle de venta anulado correctamente
+
+  # ==========================================
+  # MÓDULO: COMPRAS
+  # ==========================================
+  /compra/crear:
+    post:
+      summary: Registrar cabecera y detalle de una compra
+      tags:
+        - Compras
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - usuario_id
+                - det_compra
+              properties:
+                usuario_id:
+                  type: integer
+                  description: ID del usuario/empleado que realiza la compra
+                det_compra:
+                  type: array
+                  description: Listado de insumos/productos comprados
+                  items:
+                    type: object
+                    required:
+                      - producto_id
+                      - precio_unitario
+                    properties:
+                      producto_id:
+                        type: integer
+                        description: ID del producto comprado
+                      precio_unitario:
+                        type: number
+                        format: float
+                        description: Precio unitario de compra
+                      cantidad:
+                        type: integer
+                        default: 1
+                        description: Cantidad comprada
+                estado:
+                  type: string
+                  default: pendiente
+                  description: Estado inicial de la compra
+      responses:
+        '201':
+          description: Compra creada exitosamente
+
+  /detalle_compra/crear:
+    post:
+      summary: Añadir insumos/productos al detalle de una compra
+      tags:
+        - Compras
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - compra_id
+                - producto_id
+                - precio_unitario
+              properties:
+                compra_id:
+                  type: integer
+                  description: ID de la cabecera de compra
+                producto_id:
+                  type: integer
+                  description: ID del producto
+                precio_unitario:
+                  type: number
+                  format: float
+                  description: Costo por unidad
+                cantidad:
+                  type: integer
+                  default: 1
+                  description: Cantidad comprada
+      responses:
+        '201':
+          description: Detalle de compra registrado exitosamente
+
+  /compra/listar/{id}:
+    get:
+      summary: Listar todas las compras de un usuario específico
+      tags:
+        - Compras
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID del usuario
+      responses:
+        '200':
+          description: Lista de compras del usuario obtenida con éxito
+
+  /detalle_compra/listar/{id}:
+    get:
+      summary: Listar detalles de una compra específica
+      tags:
+        - Compras
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID de la cabecera de compra
+      responses:
+        '200':
+          description: Lista de detalles de la compra obtenida con éxito
