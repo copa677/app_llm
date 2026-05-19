@@ -59,7 +59,7 @@ class _ChatScreenState extends State<ChatScreen> {
       bool success = await _llmService.initModel();
       if (success) {
         setState(() {
-          _messages.add(ChatMessage(text: "¡Gemma está lista! ¿Qué quieres consultar?", isUser: false));
+          _messages.add(ChatMessage(text: "¡Qwen está listo! ¿Qué deseas consultar?", isUser: false));
           _isInitializing = false;
         });
       } else {
@@ -113,7 +113,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Gemma AI Local"),
+        title: const Text("Qwen AI Local"),
         centerTitle: true,
         actions: [
           if (_isInitializing)

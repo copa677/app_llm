@@ -242,18 +242,22 @@ paths:
                     type: object
                     required:
                       - producto_id
+                      - precio_unitario
                       - cantidad
                     properties:
                       producto_id:
                         type: integer
                         description: ID del producto
+                      precio_unitario:
+                        type: number
+                        description: Precio por unidad vendida
                       cantidad:
                         type: integer
                         description: Cantidad comprada (debe ser mayor a 0)
                 estado:
                   type: string
-                  default: pendiente
-                  description: Estado inicial de la venta
+                  default: completado
+                  description: Estado de la venta
       responses:
         '201':
           description: Venta creada y procesada exitosamente
@@ -342,22 +346,21 @@ paths:
                     required:
                       - producto_id
                       - precio_unitario
+                      - cantidad
                     properties:
                       producto_id:
                         type: integer
                         description: ID del producto comprado
                       precio_unitario:
                         type: number
-                        format: float
                         description: Precio unitario de compra
                       cantidad:
                         type: integer
-                        default: 1
                         description: Cantidad comprada
                 estado:
                   type: string
-                  default: pendiente
-                  description: Estado inicial de la compra
+                  default: completado
+                  description: Estado de la compra
       responses:
         '201':
           description: Compra creada exitosamente

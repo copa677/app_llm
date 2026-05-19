@@ -34,8 +34,8 @@ class LlmService {
         modelPath: modelPath,
         nThreads: 4,
         nGpuLayers: 0,
-        contextSize: 3072,
-        batchSize: 2048,
+        contextSize: 8192,
+        batchSize: 8192,
         useGpu: false,
         verbose: false,
       );
@@ -189,12 +189,8 @@ class LlmService {
 
   Future<void> generateResponse(String prompt) async {
     if (!_isLoaded) {
-      print("🔄 Recargando el modelo con un contexto limpio...");
-      final success = await initModel();
-      if (!success) {
-        _responseController.add("Error: No se pudo recargar el modelo.");
-        return;
-      }
+      _responseController.add("Error: Modelo no cargado.");
+      return;
     }
 
     try {
@@ -212,12 +208,12 @@ class LlmService {
       int maxSteps = 5;
       int step = 0;
 
-      _responseController.add("\n⚙️ **Iniciando agente de razonamiento (ReAct)...**\n");
+      _responseController.add("\n⚙️ **Iniciando asistente de consulta (Qwen)...**\n");
 
       while (!finished && step < maxSteps) {
         step++;
         print("🧠 ReAct Paso $step...");
-        _responseController.add("\n\n💬 **Paso $step de razonamiento...**\n");
+        _responseController.add("\n⚙️ **Procesando consulta (Paso $step)...**\n");
 
         final params = GenerationParams(
           prompt: conversationHistory,
@@ -228,22 +224,24 @@ class LlmService {
         );
 
         String stepResponse = "";
-        bool stopDisplaying = false;
+        bool isStreamingFinalResponse = false;
+        int finalResponseIndex = -1;
         
         await for (final token in _llama.generateStream(params)) {
           if (token.isNotEmpty) {
             stepResponse += token;
             
-            // Permitir que el stream fluya normalmente hasta completarse en C++,
-            // pero detenemos el renderizado visual en la UI en cuanto se detecta la parada.
-            if (!stopDisplaying) {
-              _responseController.add(token);
-              
-              if (stepResponse.contains("Observación:") || 
-                  stepResponse.contains("<|im_start|>") || 
-                  stepResponse.contains("<|im_end|>")) {
-                stopDisplaying = true;
+            if (!isStreamingFinalResponse) {
+              finalResponseIndex = stepResponse.indexOf("Respuesta Final:");
+              if (finalResponseIndex != -1) {
+                isStreamingFinalResponse = true;
+                final prefixLength = finalResponseIndex + "Respuesta Final:".length;
+                if (stepResponse.length > prefixLength) {
+                  _responseController.add(stepResponse.substring(prefixLength));
+                }
               }
+            } else {
+              _responseController.add(token);
             }
           }
         }
@@ -275,14 +273,51 @@ class LlmService {
         } else if (stepResponse.contains("Acción:")) {
           final actionJsonStr = _extractActionJson(stepResponse);
           if (actionJsonStr != null) {
-            _responseController.add("\n\n🔌 **Conectando a la API...**\n");
-            
-            final observation = await _executeAction(actionJsonStr);
-            
-            _responseController.add("\n📥 **Respuesta del Servidor:**\n```json\n$observation\n```\n");
-            
-            // Añadimos la observación para la siguiente ronda de pensamiento
-            conversationHistory += "\nObservación: $observation\n<|im_start|>assistant\n";
+            try {
+              final Map<String, dynamic> action = json.decode(actionJsonStr);
+              final String method = action['method'] ?? 'GET';
+              final String endpoint = action['endpoint'] ?? '';
+              final Map<String, dynamic> data = Map<String, dynamic>.from(action['data'] ?? {});
+
+              // Mostrar información amigable al usuario en lugar de JSON de la petición
+              if (method.toUpperCase() == 'GET') {
+                _responseController.add("\n🔌 **Consultando información al servidor...**\n");
+              } else {
+                _responseController.add("\n🔌 **Enviando datos al servidor...**\n");
+                if (data.isNotEmpty) {
+                  data.forEach((key, value) {
+                    _responseController.add("🔹 **$key:** $value\n");
+                  });
+                }
+              }
+
+              final observation = await _executeAction(actionJsonStr);
+              
+              // Verificar si la respuesta del servidor es exitosa
+              bool isSuccess = true;
+              if (observation.toLowerCase().contains("fallo") || observation.toLowerCase().contains("error")) {
+                isSuccess = false;
+              } else {
+                try {
+                  final decoded = json.decode(observation);
+                  if (decoded is Map && decoded['ok'] == false) {
+                    isSuccess = false;
+                  }
+                } catch (_) {}
+              }
+
+              if (isSuccess) {
+                _responseController.add("\n✅ **Petición HTTP realizada con éxito.**\n");
+              } else {
+                _responseController.add("\n❌ **Error al procesar la petición HTTP.**\n");
+              }
+
+              // Añadimos la observación para la siguiente ronda de pensamiento
+              conversationHistory += "\nObservación: $observation\n<|im_start|>assistant\n";
+            } catch (e) {
+              _responseController.add("\n❌ **Error al procesar los datos de la acción.**\n");
+              finished = true;
+            }
           } else {
             _responseController.add("\n⚠️ Error: La Acción generada no tiene un JSON estructurado válido.\n");
             finished = true;
@@ -300,10 +335,6 @@ class LlmService {
     } catch (e) {
       print("❌ Error en generación ReAct: $e");
       _responseController.add("\nError en bucle de razonamiento: $e");
-    } finally {
-      print("🧹 Liberando contexto del modelo para prevenir colisiones de KV Cache...");
-      await _llama.unloadModel();
-      _isLoaded = false;
     }
   }
 
